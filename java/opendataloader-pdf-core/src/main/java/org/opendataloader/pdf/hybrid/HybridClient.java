@@ -127,6 +127,9 @@ public interface HybridClient {
         private final Set<Integer> pageNumbers;
         private final Set<OutputFormat> outputFormats;
         private final CropOutput cropOutput;
+        // Track C: ODL's 1st-pass deterministic Markdown for the requested pages, so the backend
+        // can ground on it without re-parsing. Nullable; absent on a standard request.
+        private final String firstPassMarkdown;
 
         /**
          * Creates a new HybridRequest.
@@ -137,17 +140,19 @@ public interface HybridClient {
          */
         public HybridRequest(byte[] pdfBytes, Set<Integer> pageNumbers,
                              Set<OutputFormat> outputFormats) {
-            this(pdfBytes, pageNumbers, outputFormats, CropOutput.DISABLED);
+            this(pdfBytes, pageNumbers, outputFormats, CropOutput.DISABLED, null);
         }
 
         private HybridRequest(byte[] pdfBytes, Set<Integer> pageNumbers,
-                              Set<OutputFormat> outputFormats, CropOutput cropOutput) {
+                              Set<OutputFormat> outputFormats, CropOutput cropOutput,
+                              String firstPassMarkdown) {
             this.pdfBytes = pdfBytes != null ? Arrays.copyOf(pdfBytes, pdfBytes.length) : null;
             this.pageNumbers = pageNumbers != null ? pageNumbers : Collections.emptySet();
             this.outputFormats = outputFormats != null && !outputFormats.isEmpty()
                 ? EnumSet.copyOf(outputFormats)
                 : EnumSet.allOf(OutputFormat.class);
             this.cropOutput = cropOutput != null ? cropOutput : CropOutput.DISABLED;
+            this.firstPassMarkdown = firstPassMarkdown;
         }
 
         /**
@@ -159,7 +164,25 @@ public interface HybridClient {
          * @return a new request carrying {@code cropOutput}
          */
         public HybridRequest withCropOutput(CropOutput cropOutput) {
-            return new HybridRequest(pdfBytes, pageNumbers, outputFormats, cropOutput);
+            return new HybridRequest(pdfBytes, pageNumbers, outputFormats, cropOutput, firstPassMarkdown);
+        }
+
+        /**
+         * Returns a copy of this request carrying ODL's 1st-pass deterministic Markdown for the
+         * requested pages (Track C). The backend may ground on it instead of re-parsing.
+         *
+         * @param markdown 1st-pass Markdown, or {@code null} to omit
+         * @return a new request carrying {@code markdown}
+         */
+        public HybridRequest withFirstPassMarkdown(String markdown) {
+            return new HybridRequest(pdfBytes, pageNumbers, outputFormats, cropOutput, markdown);
+        }
+
+        /**
+         * ODL's 1st-pass deterministic Markdown for the requested pages, or {@code null} if absent.
+         */
+        public String getFirstPassMarkdown() {
+            return firstPassMarkdown;
         }
 
         /**

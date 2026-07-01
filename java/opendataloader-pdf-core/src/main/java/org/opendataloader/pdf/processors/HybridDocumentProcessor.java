@@ -53,6 +53,8 @@ import org.verapdf.wcag.algorithms.entities.geometry.BoundingBox;
 import org.verapdf.wcag.algorithms.semanticalgorithms.containers.StaticContainers;
 
 import java.io.IOException;
+import java.io.StringWriter;
+import org.opendataloader.pdf.markdown.MarkdownGenerator;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -321,7 +323,8 @@ public class HybridDocumentProcessor {
         // List, etc.) re-run setIDs and mutate the picture's structure id.
         Map<EnrichedImageChunk, Long> pictureSwapOriginalIds = new IdentityHashMap<>();
         try {
-            backendResults = processBackendPath(inputPdfName, backendPages, config, backendFailedPages);
+            backendResults = processBackendPath(inputPdfName, backendPages, config, backendFailedPages,
+                filteredContents, totalPages);
             // Enrich backend results: copy StreamInfos from Java-extracted content for MCID linkage
             enrichBackendResults(backendResults, filteredContents, config.getHybridConfig(),
                 pictureSwapOriginalIds);
@@ -630,7 +633,9 @@ public class HybridDocumentProcessor {
             String inputPdfName,
             Set<Integer> pageNumbers,
             Config config,
-            Set<Integer> backendFailedPages) throws IOException {
+            Set<Integer> backendFailedPages,
+            Map<Integer, List<IObject>> filteredContents,
+            int totalPages) throws IOException {
 
         if (pageNumbers.isEmpty()) {
             return new HashMap<>();
@@ -685,9 +690,14 @@ public class HybridDocumentProcessor {
                                  sortedPages.size()});
             }
 
+            // Track C: serialize this chunk's 1st-pass deterministic IObjects to Markdown (reusing
+            // filteredContents computed before triage -- zero re-parse) so the backend can ground on it.
+            String firstPassMarkdown = buildFirstPassMarkdown(filteredContents, chunkPages, totalPages, config);
+
             try {
                 HybridRequest request = HybridRequest.forPages(pdfBytes, chunkPages1Indexed, outputFormats)
-                    .withCropOutput(cropOutputFor(config));
+                    .withCropOutput(cropOutputFor(config))
+                    .withFirstPassMarkdown(firstPassMarkdown);
                 long convertStartNs = System.nanoTime();
                 HybridResponse response;
                 try {
@@ -781,6 +791,50 @@ public class HybridDocumentProcessor {
         // HybridClientFactory.shutdown() should be called at CLI exit.
 
         return results;
+    }
+
+    /**
+     * Track C: serialize the 1st-pass deterministic IObjects for a chunk's backend pages to
+     * Markdown, reusing {@code filteredContents} computed before triage (zero re-parse). Builds a
+     * full-document-sized list with only the chunk pages populated, so MarkdownGenerator emits just
+     * those pages. Returns {@code null} on any failure (the request then omits 1st-pass grounding).
+     */
+    private static String buildFirstPassMarkdown(Map<Integer, List<IObject>> filteredContents,
+                                                 List<Integer> chunkPages, int totalPages, Config config) {
+        try {
+            Set<Integer> chunkSet = new HashSet<>(chunkPages);
+            // filteredContents is raw chunks (triage input); MarkdownGenerator needs semantic
+            // structure (paragraphs/tables/lists). Java-path the chunk pages to get it -- this is
+            // Track C's real cost: ODL deterministically processes the backend pages once, in
+            // exchange for the proxy NOT re-parsing them. Re-uses filteredContents (no re-extract).
+            Map<Integer, List<IObject>> processed = processJavaPath(filteredContents, chunkSet, config, totalPages);
+            // processJavaPath doesn't run the heading-level pass for these pages, so SemanticHeading
+            // levels stay null and MarkdownGenerator NPEs on getHeadingLevel(). Default unset to 1.
+            for (List<IObject> pg : processed.values()) {
+                for (IObject o : pg) {
+                    if (o instanceof org.verapdf.wcag.algorithms.entities.SemanticHeading) {
+                        org.verapdf.wcag.algorithms.entities.SemanticHeading h =
+                            (org.verapdf.wcag.algorithms.entities.SemanticHeading) o;
+                        if (h.getHeadingLevel() == null) {
+                            h.setHeadingLevel(1);
+                        }
+                    }
+                }
+            }
+            List<List<IObject>> contents = new ArrayList<>(totalPages);
+            for (int i = 0; i < totalPages; i++) {
+                contents.add(processed.getOrDefault(i, new ArrayList<>()));
+            }
+            StringWriter writer = new StringWriter();
+            new MarkdownGenerator(writer, config).writeToMarkdown(contents);
+            String md = writer.toString().trim();
+            LOGGER.log(Level.FINE, "1st-pass markdown built: {0} chars for pages {1}",
+                new Object[]{md.length(), chunkPages});
+            return md.isEmpty() ? null : md;
+        } catch (Exception e) {
+            LOGGER.log(Level.WARNING, "1st-pass markdown generation failed", e);
+            return null;
+        }
     }
 
     /**

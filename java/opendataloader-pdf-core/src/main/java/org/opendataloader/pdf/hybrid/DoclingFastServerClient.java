@@ -176,6 +176,12 @@ public class DoclingFastServerClient implements HybridClient {
             bodyBuilder.addFormDataPart("page_ranges", minPage + "-" + maxPage);
         }
 
+        // Track C: attach ODL's 1st-pass deterministic Markdown so the backend can ground on it
+        // without re-parsing. Absent on a standard request.
+        if (request.getFirstPassMarkdown() != null && !request.getFirstPassMarkdown().isEmpty()) {
+            bodyBuilder.addFormDataPart("markdown_1st", request.getFirstPassMarkdown());
+        }
+
         return new Request.Builder()
             .url(baseUrl + CONVERT_ENDPOINT)
             .post(bodyBuilder.build())
